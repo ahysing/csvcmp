@@ -1,5 +1,7 @@
 #![feature(portable_simd)]
 use clap::Parser;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::error::Error;
 use std::path::Path;
 use std::process::exit;
@@ -9,6 +11,11 @@ use std::simd::SupportedLaneCount;
 use std::simd::cmp::SimdPartialOrd;
 use std::simd::num::SimdFloat;
 use std::simd::prelude::*;
+
+struct Graph {
+    x: Vec<f64>,
+    y: Vec<f64>,
+}
 
 pub fn calculate_abs_area_simd<const LANES: usize>(
     ax: &[f64],
@@ -100,27 +107,29 @@ where
 }
 
 fn merge_sorted(ax: &[f64], bx: &[f64]) -> Vec<f64> {
-    let mut x = Vec::with_capacity(ax.len() + bx.len());
-    let mut ai = 0;
-    let mut bi = 0;
-    while ai < ax.len() && bi < bx.len() {
-        if ax[ai] == bx[bi] {
-            x.push(ax[ai]);
-            ai += 1;
-            bi += 1;
-        } else if ax[ai] < bx[bi] {
-            x.push(ax[ai]);
-            ai += 1;
+    let mut out = Vec::with_capacity(ax.len() + bx.len());
+    let (mut i, mut j) = (0, 0);
+
+    while i < ax.len() && j < bx.len() {
+        let a = ax[i];
+        let b = bx[j];
+
+        if a <= b {
+            out.push(a);
+            i += 1;
+            if a == b {
+                j += 1;
+            }
         } else {
-            x.push(bx[bi]);
-            bi += 1;
+            out.push(b);
+            j += 1;
         }
     }
 
-    x.extend_from_slice(&ax[ai..]);
-    x.extend_from_slice(&bx[bi..]);
+    out.extend_from_slice(&ax[i..]);
+    out.extend_from_slice(&bx[j..]);
 
-    x
+    out
 }
 
 fn scatter_max<const LANES: usize>(
@@ -233,8 +242,8 @@ fn main() {
         exit(ExitCodeType::FileNotFound as i32);
     }
 
-    let first = match read_csv(&opt.first, opt.has_header) {
-        Ok(data) if !data.is_empty() => data,
+    let first = match read_csv(&opt.first, opt.x, opt.y, opt.has_header) {
+        Ok(data) if !data.x.is_empty() => data,
         Ok(_) => {
             eprintln!("CSV '{}' no data found.", opt.first);
             exit(ExitCodeType::NoData as i32);
@@ -244,8 +253,8 @@ fn main() {
             exit(ExitCodeType::Failure as i32);
         }
     };
-    let second = match read_csv(&opt.second, opt.has_header) {
-        Ok(data) if !data.is_empty() => data,
+    let second = match read_csv(&opt.second, opt.x, opt.y, opt.has_header) {
+        Ok(data) if !data.x.is_empty() => data,
         Ok(_) => {
             eprintln!("CSV '{}' no data found.", opt.second);
             exit(ExitCodeType::NoData as i32);
@@ -255,11 +264,10 @@ fn main() {
             exit(ExitCodeType::Failure as i32);
         }
     };
-
-    let ax = get_column(&first, opt.x);
-    let bx = get_column(&second, opt.x);
-    let ay = get_column(&first, opt.y);
-    let by = get_column(&second, opt.y);
+    let ax = first.x;
+    let bx = second.x;
+    let ay = first.y;
+    let by = second.y;
 
     if ax.is_empty() {
         eprintln!("CSV '{}' column {} empty.", opt.first, opt.x);
@@ -293,21 +301,53 @@ fn main() {
     exit(ExitCodeType::Ok as i32);
 }
 
-fn read_csv(path: &str, has_header: bool) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+fn read_csv(path: &str, x: usize, y: usize, has_header: bool)
+    -> Result<Graph, Box<dyn Error>>
+{
+    // --- First pass: count lines ---
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    // Count non-empty lines
+    let mut line_count = reader.lines().count();
+
+    if has_header && line_count > 0 {
+        line_count -= 1;
+    }
+
+    // --- Preallocate ---
+    let mut xs = Vec::with_capacity(line_count);
+    let mut ys = Vec::with_capacity(line_count);
+
+    // --- Second pass: parse CSV ---
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(has_header)
         .from_path(path)?;
-    let mut out = vec![];
-    for result in rdr.records() {
-        let record = result?;
-        out.push(record.iter().map(|s| s.to_string()).collect());
-    }
-    Ok(out)
-}
 
-fn get_column(input: &[Vec<String>], i: usize) -> Vec<f64> {
-    input
-        .iter()
-        .filter_map(|row| row.get(i).and_then(|v| v.parse::<f64>().ok()))
-        .collect()
+    for (line, result) in rdr.records().enumerate() {
+        let record = result?;
+
+        let sx = record.get(x)
+            .ok_or_else(|| format!("Missing column {} at line {}", x, line))?
+            .trim();
+
+        let sy = record.get(y)
+            .ok_or_else(|| format!("Missing column {} at line {}", y, line))?
+            .trim();
+
+        if sx.is_empty() || sy.is_empty() {
+            return Err(format!("Empty numeric field at line {}", line).into());
+        }
+
+        let xv = sx.parse::<f64>()
+            .map_err(|_| format!("Invalid float '{}' at line {}", sx, line))?;
+
+        let yv = sy.parse::<f64>()
+            .map_err(|_| format!("Invalid float '{}' at line {}", sy, line))?;
+
+        xs.push(xv);
+        ys.push(yv);
+    }
+
+    Ok(Graph { x: xs, y: ys })
 }
