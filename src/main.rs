@@ -162,31 +162,19 @@ where
     out = left_mask.select(Simd::splat(ys[0]), out);
     out = right_mask.select(Simd::splat(ys[n - 1]), out);
 
-    // Active lanes are those needing interpolation
     let mut active = !(left_mask | right_mask);
-
-    // Linear SIMD search
     let mut k = idx.reduce_min();
     while k < n && active.any() {
-        // Load xs[k] replicated
         let xk = Simd::splat(xs[k]);
-
-        // Find where xs[k] > a
         let crossed = xk.simd_gt(a) & active;
-
-        // Lanes that have NOT crossed yet should advance idx
         let advance = !crossed & active;
         let inc: Simd<usize, LANES> =
         advance.to_int().cast::<usize>() & Simd::splat(1);
         idx += inc;
-
-        // Deactivate lanes that have crossed
-        active = active & !crossed;
-
+        active &= !crossed;
         k += 1;
     }
 
-    // Now idx[lane] is the upper index for interpolation
     for lane in 0..LANES {
         if left_mask.test(lane) || right_mask.test(lane) {
             continue;
