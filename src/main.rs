@@ -9,6 +9,8 @@ use std::simd::SupportedLaneCount;
 use std::simd::cmp::SimdPartialOrd;
 use std::simd::num::SimdFloat;
 
+use std::simd::prelude::*;
+
 pub fn calculate_abs_area_simd<const LANES: usize>(
     ax: &[f64],
     ay: &[f64],
@@ -18,24 +20,27 @@ pub fn calculate_abs_area_simd<const LANES: usize>(
 where
     LaneCount<LANES>: SupportedLaneCount,
 {
-    let mut x: Vec<f64> = ax.iter().chain(bx.iter()).copied().collect();
-    x.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    x.dedup();
-
+    let x = merge_sorted(&ax, &bx);
     let mut total_area = 0.0;
 
     let mut i = 0;
+    
+    let mut idx_a_lane: Simd<usize, LANES> = Simd::splat(0);
+    let mut idx_b_lane: Simd<usize, LANES> = Simd::splat(0);
     while i + LANES <= x.len() - 1 {
+        idx_a_lane = scatter_max(idx_a_lane);
+        idx_b_lane = scatter_max(idx_b_lane);
+
         let x0 = Simd::<f64, LANES>::from_slice(&x[i..i + LANES]);
         let x1 = Simd::<f64, LANES>::from_slice(&x[i + 1..i + 1 + LANES]);
 
         let dx = x1 - x0;
 
-        let ay0 = interpolate_simd::<LANES>(ax, ay, x0);
-        let ay1 = interpolate_simd::<LANES>(ax, ay, x1);
+        let ay0 = interpolate_simd::<LANES>(ax, ay, x0, idx_a_lane);
+        let ay1 = interpolate_simd::<LANES>(ax, ay, x1, idx_b_lane);
 
-        let by0 = interpolate_simd::<LANES>(bx, by, x0);
-        let by1 = interpolate_simd::<LANES>(bx, by, x1);
+        let by0 = interpolate_simd::<LANES>(bx, by, x0, idx_a_lane);
+        let by1 = interpolate_simd::<LANES>(bx, by, x1, idx_b_lane);
 
         let y0 = ay0 - by0;
         let y1 = ay1 - by1;
@@ -63,12 +68,14 @@ where
         i += LANES;
     }
 
+    let idx_a: usize = idx_a_lane.reduce_max();
+    let idx_b: usize = idx_b_lane.reduce_max();
     for j in i..x.len() - 1 {
         let x0 = x[j];
         let x1 = x[j + 1];
 
-        let y0 = interpolate(ax, ay, x0) - interpolate(bx, by, x0);
-        let y1 = interpolate(ax, ay, x1) - interpolate(bx, by, x1);
+        let y0 = interpolate(ax, ay, x0, idx_a) - interpolate(bx, by, x0, idx_b);
+        let y1 = interpolate(ax, ay, x1, idx_a) - interpolate(bx, by, x1, idx_b);
 
         let dx = x1 - x0;
 
@@ -91,10 +98,45 @@ where
     total_area
 }
 
+fn merge_sorted(ax: &[f64], bx: &[f64]) -> Vec<f64> {
+    let mut x = Vec::with_capacity(ax.len() + bx.len());
+    let mut ai = 0;
+    let mut bi = 0;
+    while ai < ax.len() && bi < bx.len() {
+        if ax[ai] == bx[bi] {
+            x.push(ax[ai]);
+            ai += 1;
+            bi += 1;
+        } else if ax[ai] < bx[bi] {
+            x.push(ax[ai]);
+            ai += 1;
+        } else {
+            x.push(bx[bi]);
+            bi += 1;
+        }
+    }
+
+    x.extend_from_slice(&ax[ai..]);
+    x.extend_from_slice(&bx[bi..]);
+
+    x
+}
+
+fn scatter_max<const LANES: usize>(
+    values: Simd<usize, LANES>
+) -> Simd<usize, LANES>
+where
+    LaneCount<LANES>: SupportedLaneCount {
+    let max_val = values.reduce_max();
+    return Simd::<usize, LANES>::splat(max_val);
+    
+}
+
 fn interpolate_simd<const LANES: usize>(
     xs: &[f64],
     ys: &[f64],
     a: Simd<f64, LANES>,
+    mut idx: Simd<usize, LANES>,
 ) -> Simd<f64, LANES>
 where
     LaneCount<LANES>: SupportedLaneCount,
@@ -109,7 +151,11 @@ where
         } else if av >= xs[xs.len() - 1] {
             ys[ys.len() - 1]
         } else {
-            let i = xs.iter().position(|&p| p > av).unwrap();
+            let offset = xs[idx[lane]..].iter().position(|&p| p > av).unwrap();
+            
+            idx[lane] += offset;
+
+            let i = idx[lane];
             let x0 = xs[i - 1];
             let y0 = ys[i - 1];
             let x1 = xs[i];
@@ -124,7 +170,7 @@ where
     out
 }
 
-fn interpolate(x: &[f64], y: &[f64], a: f64) -> f64 {
+fn interpolate(x: &[f64], y: &[f64], a: f64, mut i: usize) -> f64 {
     if a <= x[0] {
         return y[0];
     }
@@ -132,7 +178,8 @@ fn interpolate(x: &[f64], y: &[f64], a: f64) -> f64 {
         return y[y.len() - 1];
     }
 
-    let i = x.iter().position(|&p| p > a).unwrap();
+    let offset = x[i..].iter().position(|&p| p > a).unwrap();
+    i += offset;
 
     let x0 = x[i - 1];
     let y0 = y[i - 1];
