@@ -8,7 +8,6 @@ use std::simd::Simd;
 use std::simd::SupportedLaneCount;
 use std::simd::cmp::SimdPartialOrd;
 use std::simd::num::SimdFloat;
-
 use std::simd::prelude::*;
 
 pub fn calculate_abs_area_simd<const LANES: usize>(
@@ -20,7 +19,7 @@ pub fn calculate_abs_area_simd<const LANES: usize>(
 where
     LaneCount<LANES>: SupportedLaneCount,
 {
-    let x = merge_sorted(&ax, &bx);
+    let x = merge_sorted(ax, bx);
     let mut total_area = 0.0;
 
     let mut i = 0;
@@ -34,7 +33,6 @@ where
         let x0 = Simd::<f64, LANES>::from_slice(&x[i..i + LANES]);
         let x1 = Simd::<f64, LANES>::from_slice(&x[i + 1..i + 1 + LANES]);
 
-        let dx = x1 - x0;
 
         let ay0 = interpolate_simd::<LANES>(ax, ay, x0, idx_a_lane);
         let ay1 = interpolate_simd::<LANES>(ax, ay, x1, idx_b_lane);
@@ -48,23 +46,26 @@ where
         let sign0 = y0.signum();
         let sign1 = y1.signum();
 
-        let same_sign_mask = (sign0 * sign1).simd_gt(Simd::splat(0.0));
-        let _crossing_mask = !same_sign_mask;
-
-        let abs_y0 = y0.abs();
-        let abs_y1 = y1.abs();
-        let trapezoid_area = (abs_y0 + abs_y1) * Simd::splat(0.5) * dx;
-
-        let t = abs_y0 / (abs_y0 + abs_y1);
-        let dx1 = dx * t;
-        let dx2 = dx - dx1;
-
-        let tri_area = abs_y0 * dx1 * Simd::splat(0.5) + abs_y1 * dx2 * Simd::splat(0.5);
-
-        let area_vec = same_sign_mask.select(trapezoid_area, tri_area);
-
-        total_area += area_vec.reduce_sum();
-
+        let same_mask = (sign0 * sign1).simd_gt(Simd::splat(0.0));
+        let diff_mask = (sign0 * sign1).simd_lt(Simd::splat(0.0));
+        let dx = (x1 - x0).to_array();
+        let abs_y0 = y0.abs().to_array();
+        let abs_y1 = y1.abs().to_array();
+        for k in 0..LANES {
+            unsafe {
+                if same_mask.test_unchecked(k) {
+                    let trapezoid_area = (abs_y0[k] + abs_y1[k]) * 0.5 * dx[k];
+                    total_area += trapezoid_area;
+                } else if diff_mask.test_unchecked(k) {
+                    let t = abs_y0[k] / (abs_y0[k] + abs_y1[k]);
+                    let dx1 = dx[k] * t;
+                    let dx2 = dx[k] - dx1;
+                    let tri_area = abs_y0[k] * dx1 * 0.5 + abs_y1[k] * dx2 * 0.5;
+                    total_area += tri_area;
+                }
+            }
+        }
+        
         i += LANES;
     }
 
@@ -128,7 +129,7 @@ fn scatter_max<const LANES: usize>(
 where
     LaneCount<LANES>: SupportedLaneCount {
     let max_val = values.reduce_max();
-    return Simd::<usize, LANES>::splat(max_val);
+    Simd::<usize, LANES>::splat(max_val)
     
 }
 
