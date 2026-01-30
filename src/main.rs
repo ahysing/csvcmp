@@ -31,12 +31,9 @@ where
 
     let mut i = 0;
     
-    let mut idx_a_lane: Simd<usize, LANES> = Simd::splat(0);
-    let mut idx_b_lane: Simd<usize, LANES> = Simd::splat(0);
+    let idx_a_lane: Simd<usize, LANES> = Simd::splat(0);
+    let idx_b_lane: Simd<usize, LANES> = Simd::splat(0);
     while i + LANES <= x.len() - 1 {
-        idx_a_lane = scatter_max(idx_a_lane);
-        idx_b_lane = scatter_max(idx_b_lane);
-
         let x0 = Simd::<f64, LANES>::from_slice(&x[i..i + LANES]);
         let x1 = Simd::<f64, LANES>::from_slice(&x[i + 1..i + 1 + LANES]);
 
@@ -130,16 +127,6 @@ fn merge_sorted(ax: &[f64], bx: &[f64]) -> Vec<f64> {
     out.extend_from_slice(&bx[j..]);
 
     out
-}
-
-fn scatter_max<const LANES: usize>(
-    values: Simd<usize, LANES>
-) -> Simd<usize, LANES>
-where
-    LaneCount<LANES>: SupportedLaneCount {
-    let max_val = values.reduce_max();
-    Simd::<usize, LANES>::splat(max_val)
-    
 }
 
 fn interpolate_simd<const LANES: usize>(
